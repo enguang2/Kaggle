@@ -1,0 +1,419 @@
+---
+title: "430_project"
+author: "Enguang Fan"
+date: "5/14/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(tidyverse)
+library(readr)
+library(zeallot)
+library(countrycode)
+library(ISLR)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(GoodmanKruskal)
+library(arm)
+library(randomForest)
+library(corrplot)
+library(ISLR)
+```
+
+## Section 1
+
+This final Project aim to use PCA logistic regression method to predict if the customer will cancel their order(binary response"is_cancelled") based on existing datasets of booking record ranged 2015 to 2017. For comparison, we will include traditional stepwise subset method by AIC/BIC criteria, besides, we will also use regression tree and RandomForest. Notice that I will hide some code in pdf report, you may find them in rmd file.
+
+This data set contains booking information for a city hotel and a resort hotel in Spain, and includes information such as when the booking was made, length of stay, the number of adults, children, and/or babies, and the number of available parking spaces, among other things.
+
+The dataset can be retrieved from 
+
+https://www.kaggle.com/jessemostipak/hotel-booking-demand/data#
+
+
+
+```{r echo=FALSE}
+#read in the data
+hotel_data  = read.csv("stat425_fpdata(1).csv")
+hotel_data_origin = hotel_data
+#names(hotel_data )
+#str(hotel_data)
+#summary(hotel_data)
+#head(hotel_data)
+```
+
+## Data cleaning
+
+We code all catagorical as integer variables since they will devastate the PCA analysis. This will not affect the final result(or just slightly). 
+Interestingly, coding them as factor will not be accepted by PCA package. Since the variable "arrival_date_month" and "arrival_date_week_number" essentially carry the same information(and the latter one is actually with more granularity and therefore better), so it's safe for us to delete arrival_date_month in avoid of collenarity. Some other categorical variables are "meal" "customer_type" "reserved_room_type" "market_segment"
+
+```{r include=FALSE}
+hotel_data[] <- lapply(hotel_data, as.integer)
+hotel_data_int = hotel_data
+str(hotel_data)
+summary(hotel_data)
+
+```
+
+
+
+Introduction to some of the variables
+
+Hotel: Resort Hotel or City Hotel
+
+is_canceled: Value indicating if the booking was canceled 
+
+lead_time: Number of days that elapsed between the entering date of the booking into the PMS and the arrival date
+
+arrival_date_year: Year of arrival date
+
+arrival_date_month: Month of arrival date
+
+
+## Section 2
+
+### Plots
+Now let's check the relation between is_canceled with some concerned explanatory variables
+
+```{r,echo=FALSE}
+
+boxplot(lead_time~is_canceled,hotel_data,main = "boxplot, Fig 1a",pch = 20, cex=2,col = 'red')
+
+```
+```{r echo=FALSE}
+plot(is_canceled~lead_time,hotel_data,main = "scatterplot, Fig 1b",pch = 20, cex=2,col = 'blue')
+```
+
+From Figure 1a and 1b, we can see that longer the lead time, bigger the possibility that the order will be cancelled, it makes sense since many people who order in advance eventually decide to cancel it due to some sudden erruptions.
+
+```{r echo=FALSE}
+#We further include the hotel type for the boxplot
+#swith back to categorical data for plot
+hotel_data = hotel_data_origin
+ggplot(data = hotel_data,color = "blue", aes(
+  x = hotel,
+  y = lead_time,
+  fill = factor(is_canceled)
+)) +
+  geom_boxplot(position = position_dodge()) +
+  labs(
+    title = "Cancellation By Hotel Type, Fig2a",subtitle = "Based on Lead Time",x = "Hotel Type",y = "Lead Time (Days)"
+  ) +
+  scale_fill_discrete(
+    name = "Booking Status",breaks = c("0", "1"),labels = c("Cancelled", "Not Cancelled")
+  ) + theme_light()
+
+
+```
+
+
+```{r,echo=FALSE}
+# Visualize the cancellation by hotek type
+ggplot(data = hotel_data,
+       aes(
+         x = hotel,
+         y = prop.table(stat(count)),
+         fill = factor(is_canceled),
+         label = scales::percent(prop.table(stat(count)))
+       )) +
+  geom_bar(position = position_dodge()) +
+  geom_text(
+    stat = "count",
+    position = position_dodge(.9),
+    vjust = -0.5,
+    size = 3
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Cancellation Status by Hotel Type, Fig 2b",
+       x = "Hotel Type", y = "Count") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Booking Status",breaks = c("0", "1"),labels = c("Cancelled", "Not Cancelled")
+  )
+
+```
+
+From Figure 2a and 2b, we can see that longer the lead time, bigger the possibility that the order will be cancelled. Consider the ratio, this issue is more obvious on resort hotel than city hotel. Also, more people choose city hotel over resort hotel. It's reasonable since resort hotel is likely for family vacation and maybe once or twice a year while city hotel for businessman can have more frequent orders if they travel a lot. Besides, City hotel takes nearly three times of likelihood that order will be cancelled compared to resort hotel. An interesting fact is that resort hotel are more likely to be cancelled, this might be explained by much longer lead_time.
+
+
+```{r echo=FALSE}
+barplot(prop.table(table(hotel_data$arrival_date_month)),main = "Hist Plot for month, Fig 2c")
+```
+
+Let's make a better one hist plot with ggplot2 package, reordering the month into time order rather than alphebatical order.
+
+```{r echo=FALSE}
+# Organize the Month in proper order
+hotel_data$arrival_date_month <-
+  factor(hotel_data$arrival_date_month, levels = month.name)
+# Visualize Hotel traffic on Monthly basis
+ggplot(data = hotel_data, aes(x = arrival_date_month)) +
+  geom_bar(fill = "grey") +
+  geom_text(stat = "count", aes(label = ..count..), hjust = 1) +
+  coord_flip() + labs(title = "Month Wise Booking Request, Fig 2d",
+                      x = "Month",
+                      y = "Count") +
+  theme_classic()
+```
+
+Based on Fig 2c and 2d, we conclude that the majority of the ordering present a similar distribution to normal distribution, the peak take place in August and July, whereas lowest amount happened during February to November. This distribution makes sense since the hotels are in Europe, most American tourists went there for vacation with family, which normally happened in summer(August to June). So the weather factor plays major role here.
+
+## Section 3: Different models for classification
+
+
+Firstly we do training test split with ration 0.2 as proportion of test set. After it we get training_set and test_set(find code in Rmd)
+```{r,include=FALSE}
+#data split for training and test test
+#switch back to numeric data
+hotel_data = hotel_data_int
+set.seed(123654)
+total = dim(hotel_data)[1]
+train_size = 0.5*total
+
+train_sample = sample(1:total,train_size)
+
+train_set = hotel_data[train_sample,]
+test_set = hotel_data[-train_sample,]
+
+train_size = dim(train_set)[1]
+test_size = dim(test_set)[1]
+```
+```{r eval=FALSE, include=FALSE}
+head(train_set)
+```
+
+
+### Section 3.1 Full logistic model
+
+We would start from a logistic regression model with is_cancelled as response and all other variables as explanatory variable.
+```{r,results="hide"}
+simple = glm(is_canceled~., data=train_set, family=binomial)
+summary(simple)
+```
+
+### Section 3.2 AIC/BIC selected logistic model
+
+We further use a stepwise AIC/BIC method to find a better subsets of variables which achieve good AIC/BIC
+```{r,results="hide"}
+stepA = step(simple, scope=list(upper=~., lower=~1))
+summary(stepA)
+```
+It turns out that AIC method give us model glm(formula = is_canceled ~ hotel + lead_time + arrival_date_year + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights +  meal + market_segment + reserved_room_type + customer_type + adr + total_of_special_requests, family = binomial, data = train_set) Which still contains too many predicators, we now try using BIC as criteria.
+
+```{r,results="hide"}
+n=dim(hotel_data)[1]
+stepB = step(simple, scope=list(upper=~., lower=~1), trace = 0, k=log(n))
+summary(stepB)
+```
+The BIC method gives a much better model in terms of complexity of model. Formula is is_canceled ~ hotel + lead_time + stays_in_week_nights + market_segment + customer_type + adr + total_of_special_requests. We now calculate the training error and testing error by using this model.
+
+To simplify our job, I make my own function for calculating train_error and test_error.
+
+```{r}
+#function that calculate train_error
+train_error = function(model) {
+  phat_test=model$fitted.values;
+mypred = (phat_test>0.4)
+tb = table(train_set$is_canceled, mypred)
+return ((tb[1,2] +tb[2,1])/sum(tb))
+}
+
+#function that calculate test_error
+test_error = function(model) {
+  phat_test=predict(model,test_set);
+mypred = (phat_test>0.4)
+tb = table(test_set$is_canceled, mypred)
+return ((tb[1,2] +tb[2,1])/sum(tb))
+}
+```
+
+Calculate Training error and Testing error for simple AIC BIC model seperately
+```{r}
+train_error(simple);
+test_error(simple)
+```
+```{r}
+train_error(stepA);
+test_error(stepA)
+```
+```{r}
+train_error(stepB);
+test_error(stepB)
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+#Split data for training and test
+
+train = train_set
+test = test_set
+train_new <- train  %>%  dplyr::select(-adr)
+
+number_perfect_splits <- apply(X = train_new[-1], MARGIN = 2, FUN = function(col){
+    t <- table(train$is_canceled, col)
+    sum(t == 0)
+})
+
+# Descending order of perfect splits
+order <- order(number_perfect_splits, decreasing = TRUE)
+number_perfect_splits <- number_perfect_splits[order]
+
+# Plot Graph
+par(mar = c(10,2,2,2))
+barplot(number_perfect_splits,
+       main = "Number of perfect split vs feature, Fig 3",
+       xlab = "", ylab = "Feature", las = 2, col = "wheat")
+```
+
+### Section 3.3 RandomForest
+
+We now use random forest method to generate a classification tree and calculate its train and test error. Notice that unlike rpart(), random forest cannot predict binary respone, the predictted value is numerical and we choose 0.5 as threshold for classification.
+
+```{r,echo=FALSE}
+#The random forest package has no plot function for plotting a randomforest, so we use rpart to give some intuition yet it's not precise
+mod_tree <- rpart(is_canceled ~ ., data = train_set, method = "class")
+fancyRpartPlot(mod_tree,main = "Random Forest, Fig 4")
+```
+
+```{r,warning=FALSE ,echo=FALSE}
+set.seed(123321)
+rfModel = randomForest(is_canceled~., data = train_set)
+```
+
+
+```{r echo=FALSE}
+train_permutation_table = rfModel$predicted>0.4
+table(train_set$is_canceled, train_permutation_table)
+```
+```{r}
+training_error_rf = (97+70)/(97+70+730+151)
+training_error_rf
+```
+```{r echo=FALSE}
+#calculate training error of random forest
+
+test_permutation_table = predict(rfModel,test_set)>0.4
+table(test_set$is_canceled, test_permutation_table)
+```
+```{r}
+training_error_rf = (98+69)/(96+69+727+155)
+training_error_rf
+```
+
+It seems RandomForest has much lower training and testing rate.
+
+### Section 3.4 PCA and PCA regression
+
+We firstly calculate PCA components and give brief explanations.
+```{r}
+pca=princomp(train_set[,-2],cor=TRUE,scores=TRUE)
+summary(pca)
+```
+```{r}
+round(pca$loadings[,1:5],2)
+```
+It appears that the first component is concerned with hotel type(city or resort), second component is with the time of move-in(majorly year and month, no affection on arrival_date_day_of_month). The third is with customer type. The fourth component is concerned with lead_time. Fifth component is concerned with the number of babies.
+
+Now we do regression over the first five PCA component and a big model for first 10 components.
+
+
+```{r include=FALSE}
+
+P1=pca$scores[,1]
+P2=pca$scores[,2]
+P3=pca$scores[,3]
+P4=pca$scores[,4]
+P5=pca$scores[,5]
+P6=pca$scores[,6]
+P7=pca$scores[,7]
+P8=pca$scores[,8]
+P9=pca$scores[,9]
+P10=pca$scores[,10]
+is_canceled=train_set[,"is_canceled"]
+```
+
+
+
+```{r include=FALSE}
+## fit regression models on training set
+P1mod = glm(is_canceled~P1, family=binomial)
+summary(P1mod)
+```
+```{r include=FALSE}
+P2mod = glm(is_canceled~P1+P2, family=binomial)
+summary(P2mod)
+```
+```{r include=FALSE}
+P3mod = glm(is_canceled~P1+P2+P3, family=binomial)
+summary(P3mod)
+```
+```{r include=FALSE}
+P4mod = glm(is_canceled~P1+P2+P1+P4, family=binomial)
+summary(P1mod)
+```
+```{r include=FALSE}
+P5mod = glm(is_canceled~P1+P2+P1+P4+P5, family=binomial)
+summary(P5mod)
+```
+```{r include=FALSE}
+P10mod = glm(is_canceled~P1+P2+P1+P4+P5+P6+P7+P8+P9+P10, family=binomial)
+summary(P10mod)
+```
+```{r}
+table(P1mod$fitted.values>0.24,train_set[,"is_canceled"])
+```
+```{r}
+table(P5mod$fitted.values>0.51,train_set[,"is_canceled"])
+```
+```{r}
+table(P10mod$fitted.values>0.4,train_set[,"is_canceled"])
+```
+
+Unfortunately, I haven't find a way in R (I know Python could it though) to select proper P threshold for classification, so I brutally try some value here for approximation.
+
+
+## Section 4
+
+```{r table2, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+tabl <- "# Difference of Simple, AIC, BIC  RandomForest model and PCA Regression
+|               | simple        | AIC   | BIC          |Random Forest|Pac Regression|
+|---------------|:-------------:|------:|-------------|---------|:---------:|
+| Number of predicator| 43       |28    |   15           | NA| 10
+| training error  | 0.2061069  |   0.2166031 |0.2166031 |0.1593511|0.2259294| 
+|  testing error | 0.2097235  |    0.2087703 |0.2030505  |0.1595033|0.1853215|
+"
+cat(tabl) # output the table in a format good for HTML/PDF/docx conversion
+```
+
+Conclusion: Between simple(contains all variables as predicators), AIC,BIC models we'll see that with the decrease of predicators number, the training error increase drastically and the testing error increase slightly, this corresponds to what we learned from class about complexity of models' impact to training error and testing error(The slight inrease of testing error might due to partition of train/test sample). Lastly, the randomforest provides the smallest training and testing error. Noticeably, The performance of random forest is way better than former three methods. Also the testing error is bigger than training error which corresponds to our suppose. The PCA regression model has better performance than logistic model yet slightlt worse performance than random forest. Overall, for classification purpose, random forest has way better performance of logistic regression and PAC regression, this might due to non-linearity essence of random forest. The essence of PCA regression is some kind of regulazation of our data. Above is a table of the comparison between different methods we use. An interesting issue from the table is that for simple AIC and BIC model that their testing error is slightly smaller than training error which against our knowledge. My explanation to this issue is that we need to sample bigger testing set or change the partition of our current split of train/test set.
+
+## Acknowledgement
+
+Some dataset are retrieved from
+
+https://www.kaggle.com/jessemostipak/hotel-booking-demand
+
+Code for Fig 2a, 2b, 2d are modified from 
+
+https://www.kaggle.com/anshularya/eda-predictive-analysis-for-hotel-booking-data
+
+ggplot2 code are modified from
+
+https://ggplot2.tidyverse.org/reference/
+
+
+
+
+
+
+
